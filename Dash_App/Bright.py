@@ -349,9 +349,4 @@ def update_graph(n_clicks, age, study_time, absences, parental_support, tutoring
             x=1
         )
     )
-    
-    return fig
-server = app.server
-if __name__ == '__main__':
-    port = int(os.environ.get("PORT", 8050))
-    app.run(debug=False, port=port, host="0.0.0.0")
+
