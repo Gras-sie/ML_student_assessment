@@ -9,9 +9,12 @@ import os
 from dash.dependencies import Input, Output, State
 from plotly.subplots import make_subplots
 import numpy as np
-from mlp_model import MLPModel
-
+import sys
+import os
 current_dir = os.path.dirname(os.path.abspath(__file__))
+if current_dir not in sys.path:
+    sys.path.append(current_dir)
+from mlp_model import MLPModel
 
 data_path = os.path.join(current_dir, '..', 'SRC', 'Student_performance_data.csv')  # path to data
 try:
@@ -248,6 +251,7 @@ app.layout = dbc.Container([
         ], width=12, lg=6)
     ])
 ], fluid=True, className="app-container")
+
 def map_gpa_to_grade(gpa):
     # map GPA to letter, bit basic
     if gpa >= 3.7:
@@ -391,9 +395,6 @@ def predict_grade(n_clicks, model_type, age, gender, ethnicity, parental_educati
 
     except Exception as e:
         return html.Div(f"Error: {str(e)}", className="text-danger"), ""  # summin went wrong, soz
-
-
-
 
 def get_grade_explanation(grade):
     explanations = {
