@@ -10,9 +10,29 @@ from dash.dependencies import Input, Output, State
 from plotly.subplots import make_subplots
 import numpy as np
 
+
+import torch.nn as nn
+
+class MLPModel(nn.Module):
+    def __init__(self, input_dim, hidden_dim, num_layers):
+        super(MLPModel, self).__init__()
+        layers = []
+        layers.append(nn.Linear(input_dim, hidden_dim))  # firsst layer, basic stuff
+        layers.append(nn.ReLU())  # actvation, makes it non-lin
+        
+        for _ in range(num_layers - 1):
+            layers.append(nn.Linear(hidden_dim, hidden_dim))  # more layers, more powr
+            layers.append(nn.ReLU())
+        
+        layers.append(nn.Linear(hidden_dim, 1))  # last bit, output
+        self.model = nn.Sequential(*layers)  # stack
+
+    def forward(self, x):
+        return self.model(x)  # just run it thru
+
 current_dir = os.path.dirname(os.path.abspath(__file__))
 
-data_path = os.path.join(current_dir, '..', 'SRC', 'Student_performance_data.csv')
+data_path = os.path.join(current_dir, '..', 'SRC', 'Student_performance_data.csv')  # path to data
 try:
     data = pd.read_csv(data_path)
 except FileNotFoundError:
@@ -181,6 +201,39 @@ app.layout = dbc.Container([
                         ], width=6),
                     ], className="mb-3"),
                     
+                    dbc.Row([
+                        dbc.Col([
+                            html.Label("Behind the Scenes:", className="form-label"),
+                            dcc.Dropdown(
+                                id='show-model-selection',
+                                options=[
+                                    {'label': 'No', 'value': 0},
+                                    {'label': 'Yes', 'value': 1}
+                                ],
+                                value=0,
+                                className="form-control"
+                            )
+                        ], width=12),
+                    ], className="mb-3"),
+                    
+                    dbc.Row([
+                        dbc.Col([
+                            html.Label("Model Selection:", className="form-label"),
+                            dcc.Dropdown(
+                                id='model-selection',
+                                options=[
+                                    {'label': 'Logistic Regression', 'value': 'logistic'},
+                                    {'label': 'Random Forest', 'value': 'random_forest'},
+                                    {'label': 'MLP GPA Model', 'value': 'mlp'},
+                                    {'label': 'XGBoost Classifier', 'value': 'xgboost'}
+                                ],
+                                value='logistic',
+                                className="form-control",
+                                style={'display': 'none'}
+                            )
+                        ], width=12),
+                    ], className="mb-3"),
+                    
                     dbc.Button("Predict Grade", id='predict-button', color="primary", className="predict-button w-100 mt-4"),
                 ])
             ], className="input-card")
@@ -214,11 +267,24 @@ app.layout = dbc.Container([
         ], width=12, lg=6)
     ])
 ], fluid=True, className="app-container")
+def map_gpa_to_grade(gpa):
+    # map GPA to letter, bit basic
+    if gpa >= 3.7:
+        return 'A'
+    elif gpa >= 3.0:
+        return 'B'
+    elif gpa >= 2.0:
+        return 'C'
+    elif gpa >= 1.0:
+        return 'D'
+    else:
+        return 'F'
 
 @app.callback(
     [Output('prediction-output', 'children'),
      Output('prediction-explanation', 'children')],
-    [Input('predict-button', 'n_clicks')],
+    [Input('predict-button', 'n_clicks'),
+     Input('model-selection', 'value')],
     [State('age', 'value'),
      State('gender', 'value'),
      State('ethnicity', 'value'),
@@ -232,39 +298,121 @@ app.layout = dbc.Container([
      State('music', 'value'),
      State('volunteering', 'value')]
 )
-def predict_grade(n_clicks, age, gender, ethnicity, parental_education, 
-                 study_time, absences, tutoring, parental_support,
-                 extracurricular, sports, music, volunteering):
+
+def predict_grade(n_clicks, model_type, age, gender, ethnicity, parental_education, 
+                  study_time, absences, tutoring, parental_support,
+                  extracurricular, sports, music, volunteering):
     if not n_clicks or None in [age, gender, ethnicity, parental_education, 
-                               study_time, absences, tutoring, parental_support,
-                               extracurricular, sports, music, volunteering]:
-        return html.Div("Please fill in all fields", className="text-danger"), ""
-    
+                                study_time, absences, tutoring, parental_support,
+                                extracurricular, sports, music, volunteering]:
+        return html.Div("Please fill in all fields", className="text-danger"), ""  # tell 'em off if not filled
+
     try:
-        model_path = os.path.join(current_dir, '..', 'Artifacts', 'PLK', 'logistic_model.pkl')
-        scaler_path = os.path.join(current_dir, '..', 'Artifacts', 'PLK', 'logistic_scaler.pkl')
+        if model_type not in ['logistic', 'random_forest', 'mlp', 'xgboost']:
+            model_type = 'logistic'  # fallback
+
+        # Load Model
+        if model_type == 'mlp':
+            model_path = os.path.join(current_dir, '..', 'Artifacts', 'PLK', 'mlp_gpa_model.pkl')  # mlp model
+            scaler_path = os.path.join(current_dir, '..', 'Artifacts', 'PLK', 'logistic_scaler.pkl')  # take scaler from logistic
+
+            with open(model_path, 'rb') as f:
+                model = pickle.load(f)  # hope it's not corrupted
+            model.eval()  # set to eval, no training here
+
+            with open(scaler_path, 'rb') as f:
+                scaler = pickle.load(f)  # scale it up
+
+        elif model_type == 'logistic':
+            model_path = os.path.join(current_dir, '..', 'Artifacts', 'PLK', 'logistic_model.pkl')
+            scaler_path = os.path.join(current_dir, '..', 'Artifacts', 'PLK', 'logistic_scaler.pkl')
+
+            with open(model_path, 'rb') as f:
+                model = pickle.load(f)
+            with open(scaler_path, 'rb') as f:
+                scaler = pickle.load(f)
+
+        elif model_type == 'random_forest':
+            model_path = os.path.join(current_dir, '..', 'Artifacts', 'PLK', 'random_forest_model.pkl')
+            with open(model_path, 'rb') as f:
+                model = pickle.load(f)
+
+        elif model_type == 'xgboost':
+            model_path = os.path.join(current_dir, '..', 'Artifacts', 'PLK', 'xgboost_model.pkl')
+            with open(model_path, 'rb') as f:
+                model = pickle.load(f)
+
+        # Input features
+        feature_names = ['Age', 'Gender', 'Ethnicity', 'ParentalEducation', 
+                         'StudyTimeWeekly', 'Absences', 'Tutoring', 'ParentalSupport', 
+                         'Extracurricular', 'Sports', 'Music', 'Volunteering']  # all the bits
         
-        with open(model_path, 'rb') as file:
-            model = pickle.load(file)
-        with open(scaler_path, 'rb') as file:
-            scaler = pickle.load(file)
-        
-        features = [[age, gender, ethnicity, parental_education, 
-                    study_time, absences, tutoring, parental_support,
-                    extracurricular, sports, music, volunteering]]
-        features_scaled = scaler.transform(features)
-        
-        prediction = model.predict(features_scaled)[0]
-        grade_map = {0: 'A', 1: 'B', 2: 'C', 3: 'D', 4: 'F'}
-        grade = grade_map[prediction]
-        grade_class = f"grade-{grade.lower()}"
-        
-        return [
-            html.H2(f"Predicted Grade: {grade}", className=grade_class),
-            html.P(get_grade_explanation(grade), className="mt-3")
-        ]
+        features_df = pd.DataFrame([[age, gender, ethnicity, parental_education, 
+                                     study_time, absences, tutoring, parental_support,
+                                     extracurricular, sports, music, volunteering]], 
+                                   columns=feature_names)  # one row, all the stuff
+
+        #MLP Model
+        if model_type == 'mlp':
+            import torch  # only if needed
+            features_scaled = scaler.transform(features_df)  # gotta scale it, else model gets confused
+            features_tensor = torch.tensor(features_scaled, dtype=torch.float32)  # torch likes tensors, not pandas
+            gpa = model(features_tensor).item()  # get the number out
+            grade = map_gpa_to_grade(gpa)  # turn it into a letter
+            return [
+                html.Div([
+                    html.H2(f"Predicted GPA: {gpa:.2f}", className="text-info"),
+                    html.H4(f"Mapped Grade: {grade}", className=f"grade-{grade.lower()}"),
+                    html.P("Model used: MLP GPA Model", className="text-muted")
+                ]),
+                html.P(get_grade_explanation(grade), className="mt-3")
+            ]
+
+        #Logistic Regression Model
+        elif model_type == 'logistic':
+            features_scaled = scaler.transform(features_df)  # scale it, again
+            prediction = model.predict(features_scaled)[0]  # get the pred, first one
+            grade_map = {0: 'A', 1: 'B', 2: 'C', 3: 'D', 4: 'F'}  # mapping, bit manual
+            grade = grade_map[prediction]
+            return [
+                html.Div([
+                    html.H2(f"Predicted Grade: {grade}", className=f"grade-{grade.lower()}"),
+                    html.P("Model used: Logistic Regression", className="text-muted")
+                ]),
+                html.P(get_grade_explanation(grade), className="mt-3")
+            ]
+
+        #Random Forest Model
+        elif model_type == 'random_forest':
+            prediction = model.predict(features_df)[0]  # no scaling, forest do not care
+            grade_map = {0: 'A', 1: 'B', 2: 'C', 3: 'D', 4: 'F'}
+            grade = grade_map[prediction]
+            return [
+                html.Div([
+                    html.H2(f"Predicted Grade: {grade}", className=f"grade-{grade.lower()}"),
+                    html.P("Model used: Random Forest", className="text-muted")
+                ]),
+                html.P(get_grade_explanation(grade), className="mt-3")
+            ]
+
+        #XGBoost Model
+        elif model_type == 'xgboost':
+            prediction = model.predict(features_df)[0]  # xgboost, same as forest
+            grade_map = {0: 'A', 1: 'B', 2: 'C', 3: 'D', 4: 'F'}
+            grade = grade_map[prediction]
+            return [
+                html.Div([
+                    html.H2(f"Predicted Grade: {grade}", className=f"grade-{grade.lower()}"),
+                    html.P("Model used: XGBoost Classifier", className="text-muted")
+                ]),
+                html.P(get_grade_explanation(grade), className="mt-3")
+            ]
+
     except Exception as e:
-        return f"Error: {str(e)}", ""
+        return html.Div(f"Error: {str(e)}", className="text-danger"), ""  # summin went wrong, soz
+
+
+
 
 def get_grade_explanation(grade):
     explanations = {
@@ -274,7 +422,7 @@ def get_grade_explanation(grade):
         'D': "Below average performance. The student may need additional support.",
         'F': "Student is struggling and needs immediate intervention and support."
     }
-    return explanations.get(grade, "")
+    return explanations.get(grade, "")  # just grab the explainer
 
 @app.callback(
     Output('feature-graph', 'figure'),
@@ -295,24 +443,22 @@ def update_graph(n_clicks, age, study_time, absences, parental_support, tutoring
         return {
             'data': [], 
             'layout': {'title': 'Please fill in all fields to see student analysis'}
-        }
+        }  # no click, no graph, simple
 
-    # Create student values vs. recommended values comparison
     features = {
-        'Study Hours': {'Current': study_time, 'Recommended': 15},
-        'Attendance': {'Current': 30 - absences, 'Recommended': 28},
-        'Parent Support': {'Current': parental_support, 'Recommended': 3},
-        'Tutoring': {'Current': tutoring, 'Recommended': 1},
-        'Activities': {'Current': sum([extracurricular, sports, music, volunteering]), 'Recommended': 2}
+        'Study Hours': {'Current': study_time, 'Recommended': 15},  # 15 a good number
+        'Attendance': {'Current': 30 - absences, 'Recommended': 28},  # less absences, more better
+        'Parent Support': {'Current': parental_support, 'Recommended': 3},  # 3 is alright
+        'Tutoring': {'Current': tutoring, 'Recommended': 1},  # 1 means yes
+        'Activities': {'Current': sum([extracurricular, sports, music, volunteering]), 'Recommended': 2}  # add em up, more is good
     }
     
-    x_categories = list(features.keys())
-    current_values = [features[cat]['Current'] for cat in x_categories]
-    recommended_values = [features[cat]['Recommended'] for cat in x_categories]
+    x_categories = list(features.keys())  # get the names
+    current_values = [features[cat]['Current'] for cat in x_categories]  # what they got
+    recommended_values = [features[cat]['Recommended'] for cat in x_categories]  # what they shud have
     
-    fig = go.Figure()
+    fig = go.Figure()  # start the fig
     
-    # Add bars for current values
     fig.add_trace(go.Bar(
         x=x_categories,
         y=current_values,
@@ -320,9 +466,8 @@ def update_graph(n_clicks, age, study_time, absences, parental_support, tutoring
         marker_color='crimson',
         text=current_values,
         textposition='auto',
-    ))
+    ))  # red bars, current stuff
     
-    # Add bars for recommended values
     fig.add_trace(go.Bar(
         x=x_categories,
         y=recommended_values,
@@ -330,9 +475,8 @@ def update_graph(n_clicks, age, study_time, absences, parental_support, tutoring
         marker_color='lightseagreen',
         text=recommended_values,
         textposition='auto',
-    ))
-    
-    # Update layout
+    ))  # greenish bars, what we want
+
     fig.update_layout(
         title='Student Performance Factors Analysis',
         xaxis_title='Key Performance Indicators',
@@ -348,5 +492,20 @@ def update_graph(n_clicks, age, study_time, absences, parental_support, tutoring
             xanchor='right',
             x=1
         )
-    )
+    )  # make it look nice
+    
+    return fig  # job done
 
+@app.callback(
+    Output('model-selection', 'style'),
+    [Input('show-model-selection', 'value')]
+)
+def toggle_model_selection(show):
+    if show:
+        return {'display': 'block'}  # show it if ticked
+    return {'display': 'none'}  # hide it if not
+  
+server = app.server
+if __name__ == '__main__':
+    port = int(os.environ.get("PORT", 8050))
+    app.run(debug=False, port=port, host="0.0.0.0")
